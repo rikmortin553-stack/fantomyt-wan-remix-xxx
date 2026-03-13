@@ -1,4 +1,4 @@
-# RTX 5090 / Blackwell / Wan 2.2 I2V minimal image
+# RTX 5090 / Blackwell / Wan 2.2 I2V / RunPod-friendly
 FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -8,23 +8,25 @@ ENV DEBIAN_FRONTEND=noninteractive \
     FORCE_CUDA=1 \
     TORCH_CUDA_ARCH_LIST="12.0" \
     HF_HOME="/workspace/.cache/huggingface" \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
     PATH="/opt/venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3-pip \
+    python3.11 python3.11-dev python3.11-venv python3-pip \
     git git-lfs wget curl aria2 ffmpeg ca-certificates \
-    build-essential ninja-build pkg-config \
+    build-essential ninja-build pkg-config procps \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
     && git lfs install \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3.11 -m venv /opt/venv && \
-    /opt/venv/bin/pip install --upgrade pip setuptools wheel
+    /opt/venv/bin/pip install --upgrade pip && \
+    /opt/venv/bin/pip install "setuptools<81" wheel packaging
 
-# Blackwell-safe torch branch
+# Blackwell-safe torch stack
 RUN pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
-# Core runtime helpers
+# Base runtime helpers
 RUN pip install \
     xformers \
     sageattention \
@@ -34,7 +36,7 @@ RUN pip install \
     hf_transfer \
     safetensors
 
-# Pre-build ComfyUI into the image and restore it to /workspace at runtime
+# Prepare ComfyUI in image, restore to /workspace at runtime
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git /comfy-build && \
     cd /comfy-build && \
     pip install -r requirements.txt
