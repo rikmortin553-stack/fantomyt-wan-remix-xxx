@@ -4,27 +4,31 @@ set -euo pipefail
 source /opt/venv/bin/activate
 
 WORKSPACE_DIR="/workspace"
-COMFY_IMAGE_DIR="/comfy-build"
-COMFY_RUNTIME_DIR="${WORKSPACE_DIR}/ComfyUI"
-CUSTOM_NODES_DIR="${COMFY_RUNTIME_DIR}/custom_nodes"
-MODELS_DIR="${COMFY_RUNTIME_DIR}/models"
+BUILD_DIR="/comfy-build"
+CACHE_DIR="/ComfyUI"
+RUNTIME_DIR="${WORKSPACE_DIR}/ComfyUI"
+CUSTOM_NODES_DIR="${CACHE_DIR}/custom_nodes"
+MODELS_DIR="${CACHE_DIR}/models"
 
 echo "=== Preparing workspace ==="
 mkdir -p "${WORKSPACE_DIR}" \
-         "${WORKSPACE_DIR}/models" \
-         "${WORKSPACE_DIR}/input" \
          "${WORKSPACE_DIR}/output" \
+         "${WORKSPACE_DIR}/input" \
          "${WORKSPACE_DIR}/temp" \
+         "${WORKSPACE_DIR}/models" \
          "${WORKSPACE_DIR}/.cache/huggingface"
 chmod -R 777 "${WORKSPACE_DIR}" || true
 
-echo "=== Restoring ComfyUI to workspace if needed ==="
-if [ ! -d "${COMFY_RUNTIME_DIR}" ]; then
-  cp -a "${COMFY_IMAGE_DIR}" "${COMFY_RUNTIME_DIR}"
+echo "=== Ensuring image-side cache exists ==="
+if [ ! -d "${CACHE_DIR}" ]; then
+  cp -a "${BUILD_DIR}" "${CACHE_DIR}"
 fi
-chmod -R 777 "${COMFY_RUNTIME_DIR}" || true
+chmod -R 777 "${CACHE_DIR}" || true
 
-cd "${COMFY_RUNTIME_DIR}"
+if [ "${FORCE_RESEED:-0}" = "1" ] && [ -d "${RUNTIME_DIR}" ]; then
+  echo "=== FORCE_RESEED=1 -> removing existing runtime ComfyUI ==="
+  rm -rf "${RUNTIME_DIR}"
+fi
 
 echo "=== Runtime environment fixes ==="
 pip install --upgrade "setuptools<81" wheel packaging
@@ -34,7 +38,7 @@ safe_install_requirements() {
   local filtered_req
   filtered_req="$(mktemp)"
 
-  # Protect the Blackwell-critical stack and skip noisy/problematic packages
+  # Protect critical Blackwell stack and skip noisy packages
   grep -viE '^[[:space:]]*(torch|torchvision|torchaudio|xformers|triton|sageattention|cupy([_-].*)?|bitsandbytes)([[:space:]=<>!~].*)?$' "${req_file}" > "${filtered_req}" || true
 
   if [ -s "${filtered_req}" ]; then
@@ -44,11 +48,9 @@ safe_install_requirements() {
   rm -f "${filtered_req}"
 }
 
-clone_custom_node() {
+clone_or_update_node() {
   local repo_url="$1"
   local dir_name="$2"
-  local git_ref="${3:-}"
-  local install_requirements="${4:-yes}"
 
   local target_dir="${CUSTOM_NODES_DIR}/${dir_name}"
 
@@ -57,41 +59,28 @@ clone_custom_node() {
     git clone --recursive "${repo_url}" "${target_dir}"
   else
     echo "=== Updating ${dir_name} ==="
-    git -C "${target_dir}" fetch --all --tags --prune || true
-  fi
-
-  if [ -f "${target_dir}/.gitmodules" ]; then
-    git -C "${target_dir}" submodule update --init --recursive || true
-  fi
-
-  if [ -n "${git_ref}" ]; then
-    git -C "${target_dir}" checkout "${git_ref}" || true
+    git -C "${target_dir}" pull --rebase || true
     git -C "${target_dir}" submodule update --init --recursive || true
   fi
 
   chmod -R 777 "${target_dir}" || true
 
-  if [ "${install_requirements}" = "yes" ] && [ -f "${target_dir}/requirements.txt" ]; then
+  if [ -f "${target_dir}/requirements.txt" ]; then
     echo "=== Installing requirements for ${dir_name} ==="
     safe_install_requirements "${target_dir}/requirements.txt"
   fi
 }
 
-echo "=== Installing workflow-derived custom nodes ==="
+echo "=== Installing workflow-derived custom nodes into cache ==="
 mkdir -p "${CUSTOM_NODES_DIR}"
 chmod -R 777 "${CUSTOM_NODES_DIR}" || true
 
-# Extra quality-of-life node explicitly requested by user
-clone_custom_node "https://github.com/Comfy-Org/ComfyUI-Manager.git" "ComfyUI-Manager"
-
-# Derived from workflow.json
-clone_custom_node "https://github.com/kijai/ComfyUI-WanVideoWrapper.git" "ComfyUI-WanVideoWrapper" "d9b1f4d1a5aea91d101ae97a54714a5861af3f50"
-clone_custom_node "https://github.com/kijai/ComfyUI-KJNodes.git" "ComfyUI-KJNodes" "a6b867b63a29ca48ddb15c589e17a9f2d8530d57"
-clone_custom_node "https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git" "ComfyUI-Frame-Interpolation"
-clone_custom_node "https://github.com/pythongosssss/ComfyUI-Custom-Scripts.git" "ComfyUI-Custom-Scripts"
-
-# Easy-Use: requirements only, no install.py, to avoid cupy-wheel/pkg_resources noise
-clone_custom_node "https://github.com/yolain/ComfyUI-Easy-Use.git" "ComfyUI-Easy-Use"
+clone_or_update_node "https://github.com/Comfy-Org/ComfyUI-Manager.git" "ComfyUI-Manager"
+clone_or_update_node "https://github.com/kijai/ComfyUI-WanVideoWrapper.git" "ComfyUI-WanVideoWrapper"
+clone_or_update_node "https://github.com/kijai/ComfyUI-KJNodes.git" "ComfyUI-KJNodes"
+clone_or_update_node "https://github.com/pythongosssss/ComfyUI-Custom-Scripts.git" "ComfyUI-Custom-Scripts"
+clone_or_update_node "https://github.com/yolain/ComfyUI-Easy-Use.git" "ComfyUI-Easy-Use"
+clone_or_update_node "https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git" "ComfyUI-Frame-Interpolation"
 
 echo "=== Re-pinning Blackwell-critical stack after custom node installs ==="
 pip install --upgrade "setuptools<81" wheel packaging
@@ -100,16 +89,16 @@ pip install --upgrade xformers
 pip uninstall -y sageattention || true
 pip install --no-cache-dir --force-reinstall sageattention || true
 
-echo "=== Creating model directories ==="
+echo "=== Creating model directories in cache ==="
 mkdir -p "${MODELS_DIR}/checkpoints" \
          "${MODELS_DIR}/clip" \
+         "${MODELS_DIR}/text_encoders" \
          "${MODELS_DIR}/clip_vision" \
          "${MODELS_DIR}/diffusion_models" \
          "${MODELS_DIR}/loras" \
+         "${MODELS_DIR}/vae" \
          "${MODELS_DIR}/rife" \
-         "${MODELS_DIR}/frame_interpolation" \
-         "${MODELS_DIR}/text_encoders" \
-         "${MODELS_DIR}/vae"
+         "${MODELS_DIR}/frame_interpolation"
 chmod -R 777 "${MODELS_DIR}" || true
 
 download_file() {
@@ -151,9 +140,10 @@ download_file() {
   fi
 
   chmod 666 "${output_file}" || true
+  echo "=== Downloaded: ${filename} ==="
 }
 
-echo "=== Downloading workflow-required models ==="
+echo "=== Downloading workflow-required models into cache ==="
 download_file "https://huggingface.co/FX-FeiHou/wan2.2-Remix/resolve/main/NSFW/Wan2.2_Remix_NSFW_i2v_14b_high_lighting_v2.0.safetensors?download=true" \
   "${MODELS_DIR}/diffusion_models" \
   "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_v2.0.safetensors"
@@ -162,6 +152,7 @@ download_file "https://huggingface.co/FX-FeiHou/wan2.2-Remix/resolve/main/NSFW/W
   "${MODELS_DIR}/diffusion_models" \
   "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_v2.0.safetensors"
 
+# Workflow CLIPLoader uses this file name
 download_file "https://huggingface.co/NSFW-API/NSFW-Wan-UMT5-XXL/resolve/main/nsfw_wan_umt5-xxl_fp8_scaled.safetensors?download=true" \
   "${MODELS_DIR}/clip" \
   "nsfw_wan_umt5-xxl_fp8_scaled.safetensors"
@@ -183,6 +174,11 @@ download_file "https://huggingface.co/wavespeed/misc/resolve/main/rife/rife47.pt
   "rife47.pth"
 
 ln -sf "${MODELS_DIR}/rife/rife47.pth" "${MODELS_DIR}/frame_interpolation/rife47.pth" || true
+
+echo "=== Syncing cache /ComfyUI -> runtime /workspace/ComfyUI ==="
+mkdir -p "${RUNTIME_DIR}"
+rsync -a "${CACHE_DIR}/" "${RUNTIME_DIR}/"
+chmod -R 777 "${RUNTIME_DIR}" || true
 
 if [ ! -f "${WORKSPACE_DIR}/input/elaradreamcore_0008.jpeg" ]; then
   echo "WARNING: ${WORKSPACE_DIR}/input/elaradreamcore_0008.jpeg is not present."
@@ -211,4 +207,5 @@ else
 fi
 
 echo "=== Starting ComfyUI ==="
-python main.py --listen 0.0.0.0 --port 3000 --disable-auto-launch
+cd "${RUNTIME_DIR}"
+python main.py --listen 0.0.0.0 --port 3000 --highvram --disable-auto-launch
