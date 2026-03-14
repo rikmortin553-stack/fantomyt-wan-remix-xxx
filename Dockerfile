@@ -1,4 +1,5 @@
-# RTX 5090 / Blackwell / Wan 2.2 I2V / RunPod-friendly
+# RTX 5090 / Blackwell / Wan 2.2 I2V
+# Author-template-style runtime: seed /ComfyUI, then sync to /workspace/ComfyUI
 FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -13,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 python3.11-dev python3.11-venv python3-pip \
-    git git-lfs wget curl aria2 ffmpeg ca-certificates \
+    git git-lfs wget curl aria2 rsync ffmpeg ca-certificates \
     build-essential ninja-build pkg-config procps \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
     && git lfs install \
@@ -36,10 +37,13 @@ RUN pip install \
     hf_transfer \
     safetensors
 
-# Prepare ComfyUI in image, restore to /workspace at runtime
+# Build ComfyUI into image-side build dir
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git /comfy-build && \
     cd /comfy-build && \
     pip install -r requirements.txt
+
+# Seed cache dir that will mirror author-style /ComfyUI -> /workspace/ComfyUI sync
+RUN cp -a /comfy-build /ComfyUI
 
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
