@@ -48,7 +48,7 @@ safe_install_requirements() {
   local filtered_req
   filtered_req="$(mktemp)"
 
-  # Protect the Blackwell-critical stack and skip noisy/problematic packages
+  # Protect Blackwell-critical stack and skip noisy/problematic packages
   grep -viE '^[[:space:]]*(torch|torchvision|torchaudio|xformers|triton|sageattention|cupy([_-].*)?|bitsandbytes)([[:space:]=<>!~].*)?$' "${req_file}" > "${filtered_req}" || true
 
   if [ -s "${filtered_req}" ]; then
@@ -69,6 +69,8 @@ clone_or_update_node() {
     git clone --recursive "${repo_url}" "${target_dir}"
   else
     echo "=== Updating ${dir_name} ==="
+    git -C "${target_dir}" reset --hard HEAD || true
+    git -C "${target_dir}" clean -fd || true
     git -C "${target_dir}" fetch --all --tags --prune || true
     git -C "${target_dir}" pull --rebase || true
   fi
@@ -234,7 +236,7 @@ ln -sf "${MODELS_DIR}/rife/rife47.pth" "${MODELS_DIR}/frame_interpolation/rife47
 
 echo "=== Syncing cache /ComfyUI -> runtime /workspace/ComfyUI ==="
 mkdir -p "${RUNTIME_DIR}"
-rsync -a "${CACHE_DIR}/" "${RUNTIME_DIR}/"
+rsync -a --delete "${CACHE_DIR}/" "${RUNTIME_DIR}/"
 chmod -R 777 "${RUNTIME_DIR}" || true
 
 if [ ! -f "${WORKSPACE_DIR}/input/elaradreamcore_0008.jpeg" ]; then
@@ -266,24 +268,6 @@ fi
 echo "=== Starting ComfyUI ==="
 cd "${RUNTIME_DIR}"
 
-python - <<'PY'
-import os
-import runpy
-import sys
+unset PYTORCH_CUDA_ALLOC_CONF
 
-try:
-    import torch._dynamo
-    torch._dynamo.config.suppress_errors = True
-    print("=== torch._dynamo.config.suppress_errors=True ===")
-except Exception as e:
-    print(f"WARNING: could not set torch._dynamo.config.suppress_errors: {e}")
-
-sys.argv = [
-    "main.py",
-    "--listen", "0.0.0.0",
-    "--port", "3000",
-    "--highvram",
-    "--disable-auto-launch",
-]
-runpy.run_path("main.py", run_name="__main__")
-PY
+exec python main.py --listen 0.0.0.0 --port 3000 --highvram --disable-auto-launch
